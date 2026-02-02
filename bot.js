@@ -142,7 +142,7 @@ class Konnex {
         try {
             if (!fs.existsSync(filename)) {
                 this.log(chalk.yellow.bold(`File ${filename} Not Found, Using Default Referral Code.`));
-                this.referralCodes = ["VONSSY"]; // 默认邀请码
+                this.referralCodes = ["ferdie"]; // 默认邀请码
                 return;
             }
             const content = fs.readFileSync(filename, 'utf-8');
@@ -152,7 +152,7 @@ class Konnex {
 
             if (this.referralCodes.length === 0) {
                 this.log(chalk.yellow.bold('No Referral Codes Found, Using Default.'));
-                this.referralCodes = ["VONSSY"];
+                this.referralCodes = ["ferdie"];
                 return;
             }
 
@@ -162,13 +162,13 @@ class Konnex {
             );
         } catch (e) {
             this.log(chalk.red.bold(`Failed To Load Referral Codes: ${e.message}`));
-            this.referralCodes = ["VONSSY"];
+            this.referralCodes = ["ferdie"];
         }
     }
 
     getReferralCodeForAccount(accountIndex) {
         if (this.referralCodes.length === 0) {
-            return "VONSSY"; // 默认邀请码
+            return "ferdie"; // 默认邀请码
         }
         // 如果邀请码数量少于账户数量,循环使用
         return this.referralCodes[accountIndex % this.referralCodes.length];
@@ -277,7 +277,7 @@ class Konnex {
     getSession(address, proxyUrl = null, referralCode = null) {
         if (!(address in this.sessions)) {
             const agent = this.buildProxyConfig(proxyUrl);
-            const refCode = referralCode || "VONSSY"; // 使用传入的邀请码或默认值
+            const refCode = referralCode || "ferdie"; // 使用传入的邀请码或默认值
 
             const axiosConfig = {
                 timeout: 60000,
@@ -1088,3 +1088,4 @@ if (require.main === module) {
 }
 
 module.exports = Konnex;
+
