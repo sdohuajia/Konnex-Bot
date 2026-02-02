@@ -3,6 +3,7 @@ const { ethers } = require('ethers');
 const chalk = require('chalk');
 const { HttpsProxyAgent } = require('https-proxy-agent');
 const { SocksProxyAgent } = require('socks-proxy-agent');
+const { CookieJar } = require('tough-cookie');
 const fs = require('fs');
 const path = require('path');
 const readlineSync = require('readline-sync');
@@ -47,8 +48,8 @@ class Konnex {
 
     log(message) {
         const now = new Date();
-        const wibTime = now.toLocaleString('en-US', {
-            timeZone: 'Asia/Jakarta',
+        const cstTime = now.toLocaleString('en-US', {
+            timeZone: 'Asia/Shanghai',
             year: 'numeric',
             month: '2-digit',
             day: '2-digit',
@@ -58,7 +59,7 @@ class Konnex {
             hour12: false
         });
         console.log(
-            `${chalk.cyan.bold(`[ ${wibTime} WIB ]`)} ${chalk.white.bold('|')} ${message}`
+            `${chalk.cyan.bold(`[ ${cstTime} CST ]`)} ${chalk.white.bold('|')} ${message}`
         );
     }
 
@@ -142,7 +143,7 @@ class Konnex {
         try {
             if (!fs.existsSync(filename)) {
                 this.log(chalk.yellow.bold(`File ${filename} Not Found, Using Default Referral Code.`));
-                this.referralCodes = ["ferdie"]; // 默认邀请码
+                this.referralCodes = ["VONSSY"]; // 默认邀请码
                 return;
             }
             const content = fs.readFileSync(filename, 'utf-8');
@@ -152,7 +153,7 @@ class Konnex {
 
             if (this.referralCodes.length === 0) {
                 this.log(chalk.yellow.bold('No Referral Codes Found, Using Default.'));
-                this.referralCodes = ["ferdie"];
+                this.referralCodes = ["VONSSY"];
                 return;
             }
 
@@ -162,13 +163,13 @@ class Konnex {
             );
         } catch (e) {
             this.log(chalk.red.bold(`Failed To Load Referral Codes: ${e.message}`));
-            this.referralCodes = ["ferdie"];
+            this.referralCodes = ["VONSSY"];
         }
     }
 
     getReferralCodeForAccount(accountIndex) {
         if (this.referralCodes.length === 0) {
-            return "ferdie"; // 默认邀请码
+            return "VONSSY"; // 默认邀请码
         }
         // 如果邀请码数量少于账户数量,循环使用
         return this.referralCodes[accountIndex % this.referralCodes.length];
@@ -277,7 +278,8 @@ class Konnex {
     getSession(address, proxyUrl = null, referralCode = null) {
         if (!(address in this.sessions)) {
             const agent = this.buildProxyConfig(proxyUrl);
-            const refCode = referralCode || "ferdie"; // 使用传入的邀请码或默认值
+            const refCode = referralCode || "VONSSY"; // 使用传入的邀请码或默认值
+            const jar = new CookieJar();
 
             const axiosConfig = {
                 timeout: 60000,
@@ -291,11 +293,59 @@ class Konnex {
                 axiosConfig.httpsAgent = agent;
             }
 
+            const session = axios.create(axiosConfig);
+
+            // Add request interceptor to send cookies
+            session.interceptors.request.use(async (config) => {
+                try {
+                    const cookies = await jar.getCookies(config.url || this.API_URL.hub);
+                    if (cookies && cookies.length > 0) {
+                        const cookieString = cookies.map(c => `${c.key}=${c.value}`).join('; ');
+                        if (config.headers.Cookie) {
+                            config.headers.Cookie += `; ${cookieString}`;
+                        } else {
+                            config.headers.Cookie = cookieString;
+                        }
+                    }
+                } catch (e) {
+                    // Ignore cookie errors
+                }
+                return config;
+            });
+
+            // Add response interceptor to save cookies
+            session.interceptors.response.use(async (response) => {
+                try {
+                    const setCookieHeaders = response.headers['set-cookie'];
+                    if (setCookieHeaders) {
+                        for (const cookieStr of setCookieHeaders) {
+                            await jar.setCookie(cookieStr, response.config.url || this.API_URL.hub);
+                        }
+                    }
+                } catch (e) {
+                    // Ignore cookie errors
+                }
+                return response;
+            }, async (error) => {
+                // Also save cookies from error responses
+                if (error.response && error.response.headers['set-cookie']) {
+                    try {
+                        const setCookieHeaders = error.response.headers['set-cookie'];
+                        for (const cookieStr of setCookieHeaders) {
+                            await jar.setCookie(cookieStr, error.config.url || this.API_URL.hub);
+                        }
+                    } catch (e) {
+                        // Ignore cookie errors
+                    }
+                }
+                throw error;
+            });
+
             this.sessions[address] = {
-                session: axios.create(axiosConfig),
+                session: session,
                 proxy: proxyUrl,
                 referralCode: refCode,
-                cookies: {}
+                jar: jar
             };
         }
 
@@ -445,19 +495,23 @@ class Konnex {
                     validateStatus: (status) => status < 500  // Accept redirects and success codes
                 });
 
+
                 // Check for session-token in response headers or cookies
                 const setCookie = response.headers['set-cookie'];
                 if (setCookie && setCookie.some(cookie => cookie.includes('session-token'))) {
+                    console.log(chalk.green('[DEBUG] ✓ session-token found in response'));
                     return true;
                 }
 
                 // Also check if we got a redirect (which usually means success)
                 if (response.status >= 300 && response.status < 400) {
+                    console.log(chalk.green(`[DEBUG] ✓ Got redirect (${response.status}), login likely successful`));
                     return true;
                 }
 
                 // If we got here with a 200, it might still be success
                 if (response.status === 200) {
+                    console.log(chalk.green('[DEBUG] ✓ Got 200 OK, login successful'));
                     return true;
                 }
             } catch (e) {
@@ -512,9 +566,22 @@ class Konnex {
     }
 
     async completeCheckin(address, proxyUrl = null, referralCode = null, retries = 5) {
+        // First, get CSRF token
+        const authCsrf = await this.authCsrf(address, proxyUrl, referralCode);
+        if (!authCsrf) {
+            this.log(chalk.yellow.bold('⚠️  无法获取CSRF令牌'));
+            return null;
+        }
+
+        const csrfToken = authCsrf.csrfToken;
+
         const url = `${this.API_URL.hub}/api/loyalty/rules/${this.RULES_ID}/complete`;
         const headers = this.initializeHeaders(address, "hub");
         headers["Content-Type"] = "application/json";
+        // Add CSRF token to headers
+        headers["X-CSRF-Token"] = csrfToken;
+
+
 
         for (let attempt = 0; attempt < retries; attempt++) {
             try {
@@ -1088,4 +1155,3 @@ if (require.main === module) {
 }
 
 module.exports = Konnex;
-
